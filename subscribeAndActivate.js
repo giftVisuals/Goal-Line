@@ -14,6 +14,7 @@ const {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddressSync,
+  createAssociatedTokenAccountIdempotentInstruction,
 } = require("@solana/spl-token");
 const { Connection, PublicKey, Keypair, SystemProgram } = require("@solana/web3.js");
 const axios = require("axios");
@@ -117,6 +118,16 @@ async function main() {
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     })
+    .preInstructions([
+      createAssociatedTokenAccountIdempotentInstruction(
+        payer.publicKey,
+        userTokenAccount,
+        payer.publicKey,
+        txlTokenMint,
+        TOKEN_2022_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      ),
+    ])
     .rpc();
   console.log("Subscribe tx confirmed:", txSig);
 
