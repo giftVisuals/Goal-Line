@@ -257,7 +257,9 @@ async function syncLoop() {
 
 // ─── HEALTHCHECK SERVER (Railway needs a listening port) ────────────────
 const app = express();
-app.get("/", (req, res) => res.json({ status: "ok", network: NETWORK }));
+app.use(express.static(__dirname));
+app.get("/", (req, res) => res.sendFile(__dirname + "/index.html"));
+app.get("/health", (req, res) => res.json({ status: "ok", network: NETWORK }));
 app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
