@@ -2,9 +2,10 @@
   "name": "goal-line",
   "version": "1.0.0",
   "description": "TxLINE World Cup hackathon project",
-  "main": "generateWallet.js",
+  "main": "subscribeAndActivate.js",
   "scripts": {
-    "start": "node generateWallet.js"
+    "start": "node subscribeAndActivate.js",
+    "generate-wallet": "node generateWallet.js"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
