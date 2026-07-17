@@ -45,14 +45,23 @@ async function main() {
   const provider = new anchor.AnchorProvider(connection, wallet, { commitment: "confirmed" });
   anchor.setProvider(provider);
 
-  // ---- Step 0: Airdrop devnet SOL if balance is low ----
-  const balance = await connection.getBalance(payer.publicKey);
+  // ---- Step 0: Airdrop devnet SOL if balance is low (never crash the process on faucet limits) ----
+  let balance = await connection.getBalance(payer.publicKey);
   console.log("Current balance:", balance / 1e9, "SOL");
   if (balance < 0.05 * 1e9) {
     console.log("Requesting devnet airdrop...");
-    const sig = await connection.requestAirdrop(payer.publicKey, 1e9); // 1 SOL
-    await connection.confirmTransaction(sig, "confirmed");
-    console.log("Airdrop confirmed:", sig);
+    try {
+      const sig = await connection.requestAirdrop(payer.publicKey, 1e9); // 1 SOL
+      await connection.confirmTransaction(sig, "confirmed");
+      console.log("Airdrop confirmed:", sig);
+      balance = await connection.getBalance(payer.publicKey);
+    } catch (err) {
+      console.warn("Airdrop failed (faucet likely rate-limited):", err.response?.data?.error?.message || err.message);
+      console.warn("Try https://faucet.solana.com in a browser instead, then re-run this script.");
+    }
+  }
+  if (balance < 0.002 * 1e9) {
+    throw new Error("Wallet still has no usable SOL. Fund it manually at https://faucet.solana.com and re-run.");
   }
 
   // ---- Load IDL ----
