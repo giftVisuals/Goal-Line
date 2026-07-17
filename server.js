@@ -1,4 +1,4 @@
-  // server.js — GoalLine market sync worker
+    // server.js — GoalLine market sync worker
 //
 // Pulls World Cup fixtures/odds/scores from TxLINE and writes them into the
 // Firestore "markets" collection in the exact shape index.html expects:
@@ -110,14 +110,11 @@ function getFlag(teamName) {
 
 // ─── STATUS MAPPING ──────────────────────────────────────────────────────
 // Fixture.GameState (fixtures/snapshot): 1 = scheduled, 6 = cancelled (per docs)
-function statusFromFixture(fixture, hasLiveScoreData) {
+function statusFromFixture(fixture) {
   if (fixture.GameState === 6) return "cancelled";
-  if (hasLiveScoreData) return "live";
   const start = new Date(fixture.StartTime).getTime();
   const now = Date.now();
   if (start > now) return "upcoming";
-  // Started but no live score data yet fetched this cycle — treat as live,
-  // sync will correct to "completed" once scores confirm it's finished.
   return "live";
 }
 
@@ -202,7 +199,7 @@ async function syncMarkets() {
       ]);
 
       const finished = isFinishedFromScores(scoreData);
-      const status = finished ? "completed" : statusFromFixture(fixture, Array.isArray(scoreData) && scoreData.length > 0);
+      const status = finished ? "completed" : statusFromFixture(fixture);
       const score = extractScore(scoreData, fixture.Participant1IsHome);
       const odds = extract1x2Odds(oddsData, fixture.Participant1IsHome);
 
