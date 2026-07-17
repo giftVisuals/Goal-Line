@@ -148,6 +148,7 @@ function extractScore(scoreEntries, participant1IsHome) {
 }
 
 // ─── ODDS EXTRACTION (confirmed field names from real TxLINE response) ──
+let hasLoggedRawPrices = false;
 function extract1x2Odds(oddsEntries, participant1IsHome) {
   if (!Array.isArray(oddsEntries) || !oddsEntries.length) return null;
 
@@ -157,6 +158,11 @@ function extract1x2Odds(oddsEntries, participant1IsHome) {
     const names = entry.PriceNames;
     const prices = entry.Prices;
     if (!Array.isArray(names) || !Array.isArray(prices) || names.length !== prices.length) continue;
+
+    if (!hasLoggedRawPrices) {
+      console.log(`Raw 1X2 prices (scale check): names=${JSON.stringify(names)} prices=${JSON.stringify(prices)}`);
+      hasLoggedRawPrices = true;
+    }
 
     let part1 = null, draw = null, part2 = null;
     for (let i = 0; i < names.length; i++) {
