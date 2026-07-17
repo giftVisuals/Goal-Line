@@ -175,7 +175,11 @@ function extract1x2Odds(oddsEntries, participant1IsHome) {
     if (part1 && draw && part2) {
       const home = participant1IsHome ? part1 : part2;
       const away = participant1IsHome ? part2 : part1;
-      return { oddsHome: home, oddsDraw: draw, oddsAway: away };
+      return {
+        oddsHome: home / 1000,
+        oddsDraw: draw / 1000,
+        oddsAway: away / 1000,
+      };
     }
   }
   return null;
