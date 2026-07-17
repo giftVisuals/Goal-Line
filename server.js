@@ -1,4 +1,4 @@
-    // server.js — GoalLine market sync worker
+// server.js — GoalLine market sync worker
 //
 // Pulls World Cup fixtures/odds/scores from TxLINE and writes them into the
 // Firestore "markets" collection in the exact shape index.html expects:
@@ -100,7 +100,8 @@ const FLAGS = {
   "Sweden": "🇸🇪", "Norway": "🇳🇴", "Austria": "🇦🇹", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
   "Ukraine": "🇺🇦", "Turkey": "🇹🇷", "Egypt": "🇪🇬", "Ivory Coast": "🇨🇮",
   "Algeria": "🇩🇿", "South Africa": "🇿🇦", "New Zealand": "🇳🇿", "Jamaica": "🇯🇲",
-  "Panama": "🇵🇦", "Honduras": "🇭🇳",
+  "Panama": "🇵🇦", "Honduras": "🇭🇳", "Vietnam": "🇻🇳", "Myanmar": "🇲🇲",
+  "India": "🇮🇳", "Liechtenstein": "🇱🇮", "Gibraltar": "🇬🇮",
 };
 function getFlag(teamName) {
   if (FLAGS[teamName]) return FLAGS[teamName];
