@@ -1,4 +1,4 @@
-// server.js — GoalLine market sync worker
+  // server.js — GoalLine market sync worker
 //
 // Pulls World Cup fixtures/odds/scores from TxLINE and writes them into the
 // Firestore "markets" collection in the exact shape index.html expects:
@@ -207,13 +207,7 @@ async function syncMarkets() {
       const odds = extract1x2Odds(oddsData, fixture.Participant1IsHome);
 
       if (!odds && status !== "completed") {
-        if (Array.isArray(oddsData)) {
-          const types = [...new Set(oddsData.map(e => e.SuperOddsType))];
-          console.warn(`Skipping fixture ${fixtureId} (${homeTeam} vs ${awayTeam}) — no 1X2 found. Available market types: ${JSON.stringify(types)}`);
-        } else {
-          console.warn(`Skipping fixture ${fixtureId} (${homeTeam} vs ${awayTeam}) — oddsData was: ${JSON.stringify(oddsData)}`);
-        }
-        continue;
+        console.warn(`Fixture ${fixtureId} (${homeTeam} vs ${awayTeam}) — no odds yet, writing without them.`);
       }
 
       const marketDoc = {
