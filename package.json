@@ -4,7 +4,7 @@
   "description": "TxLINE World Cup hackathon project",
   "main": "subscribeAndActivate.js",
   "scripts": {
-    "start": "node subscribeAndActivate.js",
+    "start": "node server.js",
     "generate-wallet": "node generateWallet.js"
   },
   "dependencies": {
