@@ -185,6 +185,34 @@ function extract1x2Odds(oddsEntries, participant1IsHome) {
   return null;
 }
 
+// ─── BET SETTLEMENT ──────────────────────────────────────────────────────
+async function settleBets(fixtureId, winner) {
+  if (!winner) return;
+  const marketId = `wc_${fixtureId}`;
+  const betsSnap = await db.collection("bets")
+    .where("marketId", "==", marketId)
+    .where("status", "==", "pending")
+    .get();
+  if (betsSnap.empty) return;
+
+  const batch = db.batch();
+  let settledCount = 0;
+  for (const betDoc of betsSnap.docs) {
+    const bet = betDoc.data();
+    if (!bet.outcome) continue; // pre-fix bets with no outcome field — leave pending, don't guess
+    const won = bet.outcome === winner;
+    batch.update(betDoc.ref, { status: won ? "won" : "lost" });
+    if (won) {
+      batch.update(db.collection("users").doc(bet.uid), {
+        balance: admin.firestore.FieldValue.increment(bet.payout),
+      });
+    }
+    settledCount++;
+  }
+  await batch.commit();
+  console.log(`Settled ${settledCount} bet(s) for ${marketId} (winner: ${winner}).`);
+}
+
 // ─── MAIN SYNC ────────────────────────────────────────────────────────────
 async function syncMarkets() {
   console.log(`[${new Date().toISOString()}] Sync starting...`);
@@ -218,6 +246,12 @@ async function syncMarkets() {
         console.warn(`Fixture ${fixtureId} (${homeTeam} vs ${awayTeam}) — no odds yet, writing without them.`);
       }
 
+      let winner = null;
+      if (status === "completed") {
+        const [h, a] = score.split("-").map(Number);
+        winner = h > a ? "home" : a > h ? "away" : "draw";
+      }
+
       const marketDoc = {
         home: homeTeam,
         away: awayTeam,
@@ -225,6 +259,7 @@ async function syncMarkets() {
         awayFlag: getFlag(awayTeam),
         status,
         score,
+        winner,
         time: new Date(fixture.StartTime).toLocaleString("en-GB", {
           day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
         }),
@@ -235,6 +270,10 @@ async function syncMarkets() {
       };
 
       await db.collection("markets").doc(`wc_${fixtureId}`).set(marketDoc, { merge: true });
+
+      if (status === "completed") {
+        await settleBets(fixtureId, marketDoc.winner);
+      }
     } catch (err) {
       console.error(`Failed syncing fixture ${fixture.FixtureId}:`, err.message);
       // never let one bad fixture kill the whole cycle
@@ -264,3 +303,4 @@ app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
 });
+
