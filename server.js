@@ -207,7 +207,12 @@ async function syncMarkets() {
       const odds = extract1x2Odds(oddsData, fixture.Participant1IsHome);
 
       if (!odds && status !== "completed") {
-        console.warn(`Skipping fixture ${fixtureId} (${homeTeam} vs ${awayTeam}) — odds not resolved yet.`);
+        if (Array.isArray(oddsData)) {
+          const types = [...new Set(oddsData.map(e => e.SuperOddsType))];
+          console.warn(`Skipping fixture ${fixtureId} (${homeTeam} vs ${awayTeam}) — no 1X2 found. Available market types: ${JSON.stringify(types)}`);
+        } else {
+          console.warn(`Skipping fixture ${fixtureId} (${homeTeam} vs ${awayTeam}) — oddsData was: ${JSON.stringify(oddsData)}`);
+        }
         continue;
       }
 
