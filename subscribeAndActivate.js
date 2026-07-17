@@ -64,9 +64,14 @@ async function main() {
     throw new Error("Wallet still has no usable SOL. Fund it manually at https://faucet.solana.com and re-run.");
   }
 
-  // ---- Load IDL ----
-  // Download from TxLINE docs "Runnable Devnet Examples" page and place at ./idl/txoracle.json
-  const txoracleIdl = require("./idl/txoracle.json");
+  // ---- Load IDL directly from the chain (no local file needed) ----
+  console.log("Fetching IDL from devnet...");
+  const txoracleIdl = await anchor.Program.fetchIdl(programId, provider);
+  if (!txoracleIdl) {
+    throw new Error(
+      `No on-chain IDL found for program ${programId.toBase58()}. It may not be published on-chain — we'll need to find the real download link from TxLINE if this happens.`
+    );
+  }
   const program = new anchor.Program(txoracleIdl, provider);
   if (!program.programId.equals(programId)) {
     throw new Error(
@@ -145,4 +150,3 @@ main().catch((err) => {
   console.error("Failed:", err.response?.data || err.message);
   process.exit(1);
 });
-
