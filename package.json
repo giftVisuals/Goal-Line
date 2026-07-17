@@ -16,5 +16,4 @@
     "express": "^4.19.2",
     "firebase-admin": "^12.5.0"
   }
-  }
 }
