@@ -149,34 +149,29 @@ function extractScore(scoreEntries, participant1IsHome) {
   return `${homeGoals}-${awayGoals}`;
 }
 
-// ─── ODDS EXTRACTION (best-effort, logs raw shape until confirmed) ──────
-let hasLoggedRawOdds = false;
-function extract1x2Odds(oddsEntries, fixtureId) {
+// ─── ODDS EXTRACTION (confirmed field names from real TxLINE response) ──
+function extract1x2Odds(oddsEntries, participant1IsHome) {
   if (!Array.isArray(oddsEntries) || !oddsEntries.length) return null;
 
-  if (!hasLoggedRawOdds) {
-    console.log(`Raw odds response for fixture ${fixtureId} (first fixture only, for field-name calibration):`);
-    console.log(JSON.stringify(oddsEntries.slice(0, 2), null, 2));
-    hasLoggedRawOdds = true;
-  }
-
   for (const entry of oddsEntries) {
-    const marketType = entry.MarketType ?? entry.marketName ?? entry.Market ?? entry.marketType;
-    if (marketType && !/1x2|match.?odds|full.?time.?result/i.test(String(marketType))) continue;
+    if (entry.SuperOddsType !== "1X2_PARTICIPANT_RESULT") continue;
 
-    const selections = entry.Selections ?? entry.Outcomes ?? entry.Prices ?? entry.selections;
-    if (!Array.isArray(selections)) continue;
+    const names = entry.PriceNames;
+    const prices = entry.Prices;
+    if (!Array.isArray(names) || !Array.isArray(prices) || names.length !== prices.length) continue;
 
-    let home = null, draw = null, away = null;
-    for (const sel of selections) {
-      const label = String(sel.Name ?? sel.Selection ?? sel.Outcome ?? "").toLowerCase();
-      const price = sel.Price ?? sel.Odds ?? sel.Value;
-      if (["1", "home", "h"].includes(label)) home = price;
-      else if (["x", "draw", "d"].includes(label)) draw = price;
-      else if (["2", "away", "a"].includes(label)) away = price;
+    let part1 = null, draw = null, part2 = null;
+    for (let i = 0; i < names.length; i++) {
+      const label = String(names[i]).toLowerCase();
+      const price = Number(prices[i]);
+      if (label === "part1") part1 = price;
+      else if (label === "draw") draw = price;
+      else if (label === "part2") part2 = price;
     }
-    if (home && draw && away) {
-      return { oddsHome: Number(home), oddsDraw: Number(draw), oddsAway: Number(away) };
+    if (part1 && draw && part2) {
+      const home = participant1IsHome ? part1 : part2;
+      const away = participant1IsHome ? part2 : part1;
+      return { oddsHome: home, oddsDraw: draw, oddsAway: away };
     }
   }
   return null;
@@ -209,7 +204,7 @@ async function syncMarkets() {
       const finished = isFinishedFromScores(scoreData);
       const status = finished ? "completed" : statusFromFixture(fixture, Array.isArray(scoreData) && scoreData.length > 0);
       const score = extractScore(scoreData, fixture.Participant1IsHome);
-      const odds = extract1x2Odds(oddsData, fixtureId);
+      const odds = extract1x2Odds(oddsData, fixture.Participant1IsHome);
 
       if (!odds && status !== "completed") {
         console.warn(`Skipping fixture ${fixtureId} (${homeTeam} vs ${awayTeam}) — odds not resolved yet.`);
