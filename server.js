@@ -263,11 +263,13 @@ async function syncMarkets() {
         time: new Date(fixture.StartTime).toLocaleString("en-GB", {
           day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
         }),
-        oddsHome: odds ? odds.oddsHome : null,
-        oddsDraw: odds ? odds.oddsDraw : null,
-        oddsAway: odds ? odds.oddsAway : null,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       };
+      if (odds) {
+        marketDoc.oddsHome = odds.oddsHome;
+        marketDoc.oddsDraw = odds.oddsDraw;
+        marketDoc.oddsAway = odds.oddsAway;
+      }
 
       await db.collection("markets").doc(`wc_${fixtureId}`).set(marketDoc, { merge: true });
 
@@ -303,4 +305,3 @@ app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
 });
-
