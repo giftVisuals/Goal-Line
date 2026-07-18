@@ -219,7 +219,7 @@ async function notifyLinkedUsers(text, speakText) {
     try {
       await bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
       if (audioBuffer) {
-        await bot.sendVoice(chatId, audioBuffer, {}, { filename: "alert.mp3", contentType: "audio/mpeg" });
+        await bot.sendAudio(chatId, audioBuffer, {}, { filename: "alert.mp3", contentType: "audio/mpeg" });
       }
     } catch (err) {
       console.warn(`Telegram send failed for ${doc.id}:`, err.message);
