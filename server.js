@@ -49,13 +49,15 @@ if (TELEGRAM_BOT_TOKEN) {
   // Registers the native "/" commands menu button in Telegram's chat UI
   bot.setMyCommands([
     { command: "start", description: "Get started / link your GoalLine account" },
-    { command: "link", description: "Link account — /link CODE" },
+    { command: "link", description: "Link your account" },
     { command: "help", description: "Show all commands" },
   ]);
 
+  const awaitingOtp = new Set(); // chatIds we just asked for an OTP, expecting plain text next
+
   const HELP_TEXT = "📋 *GoalLine Bot Commands*\n\n"
     + "/start — Welcome message & instructions\n"
-    + "/link CODE — Link your GoalLine account using the 6-digit code from Profile → Connect Telegram\n"
+    + "/link — Link your GoalLine account (I'll ask for your code)\n"
     + "/help — Show this list\n\n"
     + "Once linked, I message you here automatically for goals ⚽, cards 🟨🟥, big odds shifts 📊, and full-time results 🏁 — no further commands needed.";
 
@@ -64,7 +66,7 @@ if (TELEGRAM_BOT_TOKEN) {
     + "*To link your account:*\n"
     + "1. Open the GoalLine app → Profile → Connect Telegram\n"
     + "2. You'll get a 6-digit code\n"
-    + "3. Send it here as: `/link 123456`\n\n"
+    + "3. Send /link here, then just type the code when I ask for it\n\n"
     + "Tap the button below any time to see all commands.";
 
   const commandsButton = {
@@ -83,8 +85,22 @@ if (TELEGRAM_BOT_TOKEN) {
     bot.sendMessage(msg.chat.id, HELP_TEXT, { parse_mode: "Markdown" });
   });
 
-  bot.onText(/\/link\s+(\w+)/, async (msg, match) => {
-    await linkTelegramCode(match[1], msg.chat.id);
+  bot.onText(/^\/link(?:\s+(\w+))?$/, async (msg, match) => {
+    if (match[1]) {
+      awaitingOtp.delete(msg.chat.id);
+      await linkTelegramCode(match[1], msg.chat.id);
+      return;
+    }
+    awaitingOtp.add(msg.chat.id);
+    bot.sendMessage(msg.chat.id, "🔑 Please send me your 6-digit code from Profile → Connect Telegram in the app. Just type it and hit send.");
+  });
+
+  // Free-text fallback: if we just asked this chat for an OTP, treat their next message as the code
+  bot.on("message", async (msg) => {
+    if (!msg.text || msg.text.startsWith("/")) return;
+    if (!awaitingOtp.has(msg.chat.id)) return;
+    awaitingOtp.delete(msg.chat.id);
+    await linkTelegramCode(msg.text.trim(), msg.chat.id);
   });
 
   bot.on("callback_query", async (query) => {
@@ -462,4 +478,3 @@ app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
 });
-
