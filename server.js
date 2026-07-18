@@ -545,6 +545,9 @@ async function syncMarkets() {
         const elapsedMins = (Date.now() - new Date(fixture.StartTime).getTime()) / 60000;
         if (elapsedMins > 130) status = "completed";
       }
+      if (homeTeam === "France" || awayTeam === "France") {
+        console.log(`RAW scores payload for ${homeTeam} vs ${awayTeam}:`, JSON.stringify(scoreData));
+      }
       const score = extractScore(scoreData, fixture.Participant1IsHome);
       const cards = extractCards(scoreData, fixture.Participant1IsHome);
       const odds = extract1x2Odds(oddsData, fixture.Participant1IsHome);
