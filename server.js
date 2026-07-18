@@ -110,6 +110,14 @@ if (TELEGRAM_BOT_TOKEN) {
     }
   });
 
+  bot.on("polling_error", (err) => {
+    // Expected during redeploys — the old container's connection briefly
+    // overlaps with the new one. Non-fatal; polling recovers automatically.
+    if (err.code !== "ETELEGRAM" || !String(err.message).includes("409")) {
+      console.warn("Telegram polling error:", err.message);
+    }
+  });
+
   console.log("Telegram bot polling started.");
 } else {
   console.warn("TELEGRAM_BOT_TOKEN not set — Telegram notifications disabled.");
@@ -135,18 +143,48 @@ async function linkTelegramCode(code, chatId) {
   bot.sendMessage(chatId, `✅ Linked! You're set as ${user.name || "a GoalLine user"}. I'll ping you here for goals, red cards, and big odds shifts.`);
 }
 
-async function notifyLinkedUsers(text) {
+const TTS_ENABLED = process.env.TELEGRAM_TTS_ENABLED === "true";
+
+async function synthesizeSpeech(text) {
+  // Free, no-key TTS endpoint — good enough for a hackathon demo.
+  const url = `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(text)}`;
+  const res = await axios.get(url, { responseType: "arraybuffer", timeout: 8000 });
+  return Buffer.from(res.data);
+}
+
+async function notifyLinkedUsers(text, speakText) {
   if (!bot) return;
   const usersSnap = await db.collection("users").where("telegramChatId", "!=", null).get();
-  await Promise.all(usersSnap.docs.map(doc =>
-    bot.sendMessage(doc.data().telegramChatId, text, { parse_mode: "Markdown" })
-      .catch(err => console.warn(`Telegram send failed for ${doc.id}:`, err.message))
-  ));
+
+  let audioBuffer = null;
+  if (TTS_ENABLED && speakText) {
+    try {
+      audioBuffer = await synthesizeSpeech(speakText);
+    } catch (err) {
+      console.warn("TTS synthesis failed, sending text only:", err.message);
+    }
+  }
+
+  await Promise.all(usersSnap.docs.map(async (doc) => {
+    const chatId = doc.data().telegramChatId;
+    try {
+      await bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
+      if (audioBuffer) {
+        await bot.sendVoice(chatId, audioBuffer, {}, { filename: "alert.mp3", contentType: "audio/mpeg" });
+      }
+    } catch (err) {
+      console.warn(`Telegram send failed for ${doc.id}:`, err.message);
+    }
+  }));
 }
 
 // ─── PREVIOUS STATE CACHE (for detecting goals / odds shifts) ───────────
 const prevFixtureState = new Map();
-const ODDS_SHIFT_THRESHOLD = 0.5;
+const ODDS_SHIFT_THRESHOLD = 0.75; // raised so only genuinely significant swings alert
+
+function impliedProb(decimalOdds) {
+  return decimalOdds ? Math.round((1 / decimalOdds) * 100) : null;
+}
 
 async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards, status) {
   const prev = prevFixtureState.get(fixtureId);
@@ -160,13 +198,16 @@ async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards
 
   if (prev) {
     if (prev.score !== curr.score && curr.score !== "0-0") {
-      await notifyLinkedUsers(`⚽ *GOAL!*\n${homeTeam} ${curr.score} ${awayTeam}`);
+      const text = `⚽ *GOAL!*\n${homeTeam} ${curr.score} ${awayTeam}\nThe scoreline just moved — that's a big swing in this one.`;
+      await notifyLinkedUsers(text, `Goal! ${homeTeam} ${curr.score.replace("-", " ")} ${awayTeam}.`);
     }
     if (curr.redHome > prev.redHome) {
-      await notifyLinkedUsers(`🟥 *RED CARD* — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+      const text = `🟥 *RED CARD* — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}\n${homeTeam} are down to 10 men — expect the market to react fast.`;
+      await notifyLinkedUsers(text, `Red card for ${homeTeam}. They're down to ten men.`);
     }
     if (curr.redAway > prev.redAway) {
-      await notifyLinkedUsers(`🟥 *RED CARD* — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+      const text = `🟥 *RED CARD* — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}\n${awayTeam} are down to 10 men — expect the market to react fast.`;
+      await notifyLinkedUsers(text, `Red card for ${awayTeam}. They're down to ten men.`);
     }
     if (curr.yellowHome > prev.yellowHome) {
       await notifyLinkedUsers(`🟨 Yellow card — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
@@ -174,14 +215,20 @@ async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards
     if (curr.yellowAway > prev.yellowAway) {
       await notifyLinkedUsers(`🟨 Yellow card — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
     }
+    // Only fire for genuinely BIG shifts now — small odds wobble is noise, not news.
     if (prev.oddsHome != null && curr.oddsHome != null) {
       const shift = Math.max(Math.abs(curr.oddsHome - prev.oddsHome), Math.abs(curr.oddsAway - prev.oddsAway));
       if (shift >= ODDS_SHIFT_THRESHOLD) {
-        await notifyLinkedUsers(`📊 *Odds shift* — ${homeTeam} vs ${awayTeam}\nHome ${prev.oddsHome.toFixed(2)} → ${curr.oddsHome.toFixed(2)} | Away ${prev.oddsAway.toFixed(2)} → ${curr.oddsAway.toFixed(2)}`);
+        const favoring = curr.oddsHome < prev.oddsHome ? homeTeam : awayTeam;
+        const before = impliedProb(prev.oddsHome < prev.oddsAway ? prev.oddsHome : prev.oddsAway);
+        const after = impliedProb(curr.oddsHome < curr.oddsAway ? curr.oddsHome : curr.oddsAway);
+        const text = `📊 *Big odds shift* — ${homeTeam} vs ${awayTeam}\nHome ${prev.oddsHome.toFixed(2)} → ${curr.oddsHome.toFixed(2)} | Away ${prev.oddsAway.toFixed(2)} → ${curr.oddsAway.toFixed(2)}\nThe market has swung hard toward ${favoring} — implied confidence moved from roughly ${before}% to ${after}%.`;
+        await notifyLinkedUsers(text, `Big odds shift. The market is now favoring ${favoring}.`);
       }
     }
     if (prev.status !== "completed" && status === "completed") {
-      await notifyLinkedUsers(`🏁 *Full-time*\n${homeTeam} ${curr.score} ${awayTeam}`);
+      const text = `🏁 *Full-time*\n${homeTeam} ${curr.score} ${awayTeam}`;
+      await notifyLinkedUsers(text, `Full time. ${homeTeam} ${curr.score.replace("-", " ")} ${awayTeam}.`);
     }
   }
   prevFixtureState.set(fixtureId, { ...curr, status });
