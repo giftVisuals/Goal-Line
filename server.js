@@ -474,6 +474,12 @@ const app = express();
 app.use(express.static(__dirname));
 app.get("/", (req, res) => res.sendFile(__dirname + "/index.html"));
 app.get("/health", (req, res) => res.json({ status: "ok", network: NETWORK }));
+
+// SPA fallback: any other route (e.g. /home, /matches, /bets, /profile) still
+// serves index.html so a page refresh doesn't 404 — the client-side router
+// in index.html reads the URL and switches to the right tab.
+app.get(/^\/(?!health).*/, (req, res) => res.sendFile(__dirname + "/index.html"));
+
 app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
