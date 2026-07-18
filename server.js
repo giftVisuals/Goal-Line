@@ -20,6 +20,7 @@
 const express = require("express");
 const axios = require("axios");
 const admin = require("firebase-admin");
+const TelegramBot = require("node-telegram-bot-api");
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────
 const NETWORK = "devnet"; // switch to "mainnet" later if you move off devnet
@@ -38,6 +39,101 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 const db = admin.firestore();
+
+// ─── TELEGRAM BOT (account linking + live alerts) ───────────────────────
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+let bot = null;
+if (TELEGRAM_BOT_TOKEN) {
+  bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+
+  bot.onText(/\/start(?:\s+(\w+))?/, async (msg, match) => {
+    if (!match[1]) {
+      bot.sendMessage(msg.chat.id, "👋 Welcome to GoalLine! Open the app → Profile → Connect Telegram, then send me the 6-digit code with /link CODE.");
+      return;
+    }
+    await linkTelegramCode(match[1], msg.chat.id);
+  });
+
+  bot.onText(/\/link\s+(\w+)/, async (msg, match) => {
+    await linkTelegramCode(match[1], msg.chat.id);
+  });
+
+  console.log("Telegram bot polling started.");
+} else {
+  console.warn("TELEGRAM_BOT_TOKEN not set — Telegram notifications disabled.");
+}
+
+async function linkTelegramCode(code, chatId) {
+  const usersSnap = await db.collection("users").where("telegramOtp", "==", code).limit(1).get();
+  if (usersSnap.empty) {
+    bot.sendMessage(chatId, "❌ Invalid or expired code. Generate a new one from Profile → Connect Telegram.");
+    return;
+  }
+  const userDoc = usersSnap.docs[0];
+  const user = userDoc.data();
+  if (user.telegramOtpExpires && user.telegramOtpExpires.toMillis() < Date.now()) {
+    bot.sendMessage(chatId, "❌ That code expired. Generate a new one from Profile → Connect Telegram.");
+    return;
+  }
+  await userDoc.ref.update({
+    telegramChatId: String(chatId),
+    telegramOtp: admin.firestore.FieldValue.delete(),
+    telegramOtpExpires: admin.firestore.FieldValue.delete(),
+  });
+  bot.sendMessage(chatId, `✅ Linked! You're set as ${user.name || "a GoalLine user"}. I'll ping you here for goals, red cards, and big odds shifts.`);
+}
+
+async function notifyLinkedUsers(text) {
+  if (!bot) return;
+  const usersSnap = await db.collection("users").where("telegramChatId", "!=", null).get();
+  await Promise.all(usersSnap.docs.map(doc =>
+    bot.sendMessage(doc.data().telegramChatId, text, { parse_mode: "Markdown" })
+      .catch(err => console.warn(`Telegram send failed for ${doc.id}:`, err.message))
+  ));
+}
+
+// ─── PREVIOUS STATE CACHE (for detecting goals / odds shifts) ───────────
+const prevFixtureState = new Map();
+const ODDS_SHIFT_THRESHOLD = 0.5;
+
+async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards, status) {
+  const prev = prevFixtureState.get(fixtureId);
+  const curr = {
+    score: marketDoc.score,
+    oddsHome: odds?.oddsHome,
+    oddsAway: odds?.oddsAway,
+    redHome: cards.redHome, redAway: cards.redAway,
+    yellowHome: cards.yellowHome, yellowAway: cards.yellowAway,
+  };
+
+  if (prev) {
+    if (prev.score !== curr.score && curr.score !== "0-0") {
+      await notifyLinkedUsers(`⚽ *GOAL!*\n${homeTeam} ${curr.score} ${awayTeam}`);
+    }
+    if (curr.redHome > prev.redHome) {
+      await notifyLinkedUsers(`🟥 *RED CARD* — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+    }
+    if (curr.redAway > prev.redAway) {
+      await notifyLinkedUsers(`🟥 *RED CARD* — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+    }
+    if (curr.yellowHome > prev.yellowHome) {
+      await notifyLinkedUsers(`🟨 Yellow card — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+    }
+    if (curr.yellowAway > prev.yellowAway) {
+      await notifyLinkedUsers(`🟨 Yellow card — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+    }
+    if (prev.oddsHome != null && curr.oddsHome != null) {
+      const shift = Math.max(Math.abs(curr.oddsHome - prev.oddsHome), Math.abs(curr.oddsAway - prev.oddsAway));
+      if (shift >= ODDS_SHIFT_THRESHOLD) {
+        await notifyLinkedUsers(`📊 *Odds shift* — ${homeTeam} vs ${awayTeam}\nHome ${prev.oddsHome.toFixed(2)} → ${curr.oddsHome.toFixed(2)} | Away ${prev.oddsAway.toFixed(2)} → ${curr.oddsAway.toFixed(2)}`);
+      }
+    }
+    if (prev.status !== "completed" && status === "completed") {
+      await notifyLinkedUsers(`🏁 *Full-time*\n${homeTeam} ${curr.score} ${awayTeam}`);
+    }
+  }
+  prevFixtureState.set(fixtureId, { ...curr, status });
+}
 
 // ─── TXLINE AUTH STATE (refreshed automatically on 401) ────────────────
 let jwt = process.env.TXLINE_GUEST_JWT;
@@ -147,6 +243,28 @@ function extractScore(scoreEntries, participant1IsHome) {
   return `${homeGoals}-${awayGoals}`;
 }
 
+// Extract total card counts from stat keys (3/4 = yellow home/away, 5/6 = red home/away)
+function extractCards(scoreEntries, participant1IsHome) {
+  if (!Array.isArray(scoreEntries) || !scoreEntries.length) {
+    return { yellowHome: 0, yellowAway: 0, redHome: 0, redAway: 0 };
+  }
+  let p1Yellow = 0, p2Yellow = 0, p1Red = 0, p2Red = 0;
+  for (const entry of scoreEntries) {
+    const key = entry.Key ?? entry.key ?? entry.StatKey;
+    const value = entry.Value ?? entry.value ?? entry.StatValue;
+    if (key === 3) p1Yellow = Number(value) || p1Yellow;
+    if (key === 4) p2Yellow = Number(value) || p2Yellow;
+    if (key === 5) p1Red = Number(value) || p1Red;
+    if (key === 6) p2Red = Number(value) || p2Red;
+  }
+  return {
+    yellowHome: participant1IsHome ? p1Yellow : p2Yellow,
+    yellowAway: participant1IsHome ? p2Yellow : p1Yellow,
+    redHome: participant1IsHome ? p1Red : p2Red,
+    redAway: participant1IsHome ? p2Red : p1Red,
+  };
+}
+
 // ─── ODDS EXTRACTION (confirmed field names from real TxLINE response) ──
 let hasLoggedRawPrices = false;
 function extract1x2Odds(oddsEntries, participant1IsHome) {
@@ -240,6 +358,7 @@ async function syncMarkets() {
       const finished = isFinishedFromScores(scoreData);
       const status = finished ? "completed" : statusFromFixture(fixture);
       const score = extractScore(scoreData, fixture.Participant1IsHome);
+      const cards = extractCards(scoreData, fixture.Participant1IsHome);
       const odds = extract1x2Odds(oddsData, fixture.Participant1IsHome);
 
       if (!odds && status !== "completed") {
@@ -272,6 +391,8 @@ async function syncMarkets() {
       }
 
       await db.collection("markets").doc(`wc_${fixtureId}`).set(marketDoc, { merge: true });
+
+      await maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards, status);
 
       if (status === "completed") {
         await settleBets(fixtureId, marketDoc.winner);
