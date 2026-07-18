@@ -201,7 +201,7 @@ async function synthesizeSpeech(text) {
   return Buffer.from(res.data);
 }
 
-async function notifyLinkedUsers(text, speakText) {
+async function notifyLinkedUsers(text, speakText, imageUrl) {
   if (!bot) return;
   const usersSnap = await db.collection("users").where("telegramChatId", "!=", null).get();
 
@@ -217,7 +217,11 @@ async function notifyLinkedUsers(text, speakText) {
   await Promise.all(usersSnap.docs.map(async (doc) => {
     const chatId = doc.data().telegramChatId;
     try {
-      await bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
+      if (imageUrl) {
+        await bot.sendPhoto(chatId, imageUrl, { caption: text, parse_mode: "Markdown" });
+      } else {
+        await bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
+      }
       if (audioBuffer) {
         await bot.sendAudio(chatId, audioBuffer, {}, { filename: "alert.mp3", contentType: "audio/mpeg" });
       }
@@ -230,6 +234,7 @@ async function notifyLinkedUsers(text, speakText) {
 // ─── PREVIOUS STATE CACHE (for detecting goals / odds shifts) ───────────
 const prevFixtureState = new Map();
 const ODDS_SHIFT_PROB_THRESHOLD = 8; // percentage points of implied probability — robust across all odds scales
+const GOAL_IMAGE_URL = "https://i.postimg.cc/y6Zkd4rW/file-000000006cd081f4910f83c867f91fa9.png";
 
 function impliedProb(decimalOdds) {
   return decimalOdds ? Math.round((1 / decimalOdds) * 100) : null;
@@ -245,7 +250,7 @@ async function logMatchEvent(fixtureId, event) {
   }
 }
 
-async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards, status) {
+async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards, status, scoreData) {
   const prev = prevFixtureState.get(fixtureId);
   const curr = {
     score: marketDoc.score,
@@ -258,27 +263,60 @@ async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards
 
   if (prev) {
     if (prev.score !== curr.score && curr.score !== "0-0") {
-      const text = `⚽ *GOAL!*\n${homeTeam} ${curr.score} ${awayTeam}\nThe scoreline just moved — that's a big swing in this one.`;
-      await notifyLinkedUsers(text, `Goal! ${homeTeam} ${curr.score.replace("-", " ")} ${awayTeam}.`);
-      const scoringTeam = curr.score.split("-")[0] > prev.score.split("-")[0] ? homeTeam : awayTeam;
-      await logMatchEvent(fixtureId, { type: "goal", label: `Goal — ${scoringTeam}` });
+      const [hGoals, aGoals] = curr.score.split("-").map(Number);
+      const [prevH, prevA] = prev.score.split("-").map(Number);
+      const scoringTeam = hGoals > prevH ? homeTeam : awayTeam;
+      const concedingTeam = scoringTeam === homeTeam ? awayTeam : homeTeam;
+      const margin = Math.abs(hGoals - aGoals);
+
+      const goalEvent = getLatestEventByAction(scoreData, "goal");
+      const lookup = buildPlayerLookup(scoreData);
+      const scorer = goalEvent?.Data?.PlayerId ? lookup[goalEvent.Data.PlayerId] : null;
+      const typePhrase = goalTypePhrase(goalEvent?.Data?.GoalType);
+      const scorerPhrase = scorer ? `${scorer}${typePhrase ? " " + typePhrase : ""}` : null;
+
+      const commentary = margin >= 2
+        ? pick([
+            `${scorerPhrase ? scorerPhrase + ", and " : ""}${scoringTeam} are pulling this one apart! ${curr.score} — it's starting to look like a formality for ${concedingTeam}.`,
+            `${scorerPhrase ? scorerPhrase + " does it again — " : ""}${scoringTeam} in total control. ${curr.score}, and ${concedingTeam} look shellshocked.`,
+          ])
+        : margin === 1
+        ? pick([
+            `${scorerPhrase ? scorerPhrase + " strikes! " : ""}${scoringTeam} edge in front — ${curr.score}. Game on.`,
+            `${scorerPhrase ? scorerPhrase + " finds the net! " : ""}${curr.score}, and ${concedingTeam} need a response, fast.`,
+          ])
+        : pick([
+            `${scorerPhrase ? scorerPhrase + " levels it up! " : ""}${curr.score} — we're all square again, wide open from here.`,
+          ]);
+
+      const text = `⚽ *GOAL!*\n${homeTeam} ${curr.score} ${awayTeam}\n${commentary}`;
+      await notifyLinkedUsers(text, `Goal! ${homeTeam} ${curr.score.replace("-", " ")} ${awayTeam}.`, GOAL_IMAGE_URL);
+      await logMatchEvent(fixtureId, { type: "goal", label: `Goal — ${scoringTeam}${scorer ? ` (${scorer})` : ""}` });
     }
     if (curr.redHome > prev.redHome) {
-      const text = `🟥 *RED CARD* — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}\n${homeTeam} are down to 10 men — expect the market to react fast.`;
+      const commentary = pick([
+        `${homeTeam} are down to ten men — ${awayTeam} will sense the opening immediately.`,
+        `Straight red for ${homeTeam}! A mountain to climb from here, and the market already knows it.`,
+      ]);
+      const text = `🟥 *RED CARD* — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}\n${commentary}`;
       await notifyLinkedUsers(text, `Red card for ${homeTeam}. They're down to ten men.`);
       await logMatchEvent(fixtureId, { type: "red", label: `Red card — ${homeTeam}` });
     }
     if (curr.redAway > prev.redAway) {
-      const text = `🟥 *RED CARD* — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}\n${awayTeam} are down to 10 men — expect the market to react fast.`;
+      const commentary = pick([
+        `${awayTeam} are down to ten men — ${homeTeam} will sense the opening immediately.`,
+        `Straight red for ${awayTeam}! A mountain to climb from here, and the market already knows it.`,
+      ]);
+      const text = `🟥 *RED CARD* — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}\n${commentary}`;
       await notifyLinkedUsers(text, `Red card for ${awayTeam}. They're down to ten men.`);
       await logMatchEvent(fixtureId, { type: "red", label: `Red card — ${awayTeam}` });
     }
     if (curr.yellowHome > prev.yellowHome) {
-      await notifyLinkedUsers(`🟨 Yellow card — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+      await notifyLinkedUsers(`🟨 Yellow card — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}\nBooked, and the referee's watching this one closely now.`);
       await logMatchEvent(fixtureId, { type: "yellow", label: `Yellow card — ${homeTeam}` });
     }
     if (curr.yellowAway > prev.yellowAway) {
-      await notifyLinkedUsers(`🟨 Yellow card — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+      await notifyLinkedUsers(`🟨 Yellow card — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}\nBooked, and the referee's watching this one closely now.`);
       await logMatchEvent(fixtureId, { type: "yellow", label: `Yellow card — ${awayTeam}` });
     }
     // Corners: timeline only — too frequent to justify a Telegram push
@@ -295,12 +333,20 @@ async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards
       const homeShiftPts = Math.abs(currHomeProb - prevHomeProb);
       if (homeShiftPts >= ODDS_SHIFT_PROB_THRESHOLD) {
         const favoring = currHomeProb > prevHomeProb ? homeTeam : awayTeam;
-        const text = `📊 *Big odds shift* — ${homeTeam} vs ${awayTeam}\nHome ${prev.oddsHome.toFixed(2)} → ${curr.oddsHome.toFixed(2)} | Away ${prev.oddsAway.toFixed(2)} → ${curr.oddsAway.toFixed(2)}\nThe market has swung hard toward ${favoring} — implied confidence moved from roughly ${prevHomeProb}% to ${currHomeProb}%.`;
+        const commentary = pick([
+          `The market has swung hard toward ${favoring} — implied confidence moved from roughly ${prevHomeProb}% to ${currHomeProb}%.`,
+          `Money is piling in behind ${favoring} right now — confidence jumped from about ${prevHomeProb}% to ${currHomeProb}%.`,
+        ]);
+        const text = `📊 *Big odds shift* — ${homeTeam} vs ${awayTeam}\nHome ${prev.oddsHome.toFixed(2)} → ${curr.oddsHome.toFixed(2)} | Away ${prev.oddsAway.toFixed(2)} → ${curr.oddsAway.toFixed(2)}\n${commentary}`;
         await notifyLinkedUsers(text, `Big odds shift. The market is now favoring ${favoring}.`);
       }
     }
     if (prev.status !== "completed" && status === "completed") {
-      const text = `🏁 *Full-time*\n${homeTeam} ${curr.score} ${awayTeam}`;
+      const [hGoals, aGoals] = curr.score.split("-").map(Number);
+      const resultLine = hGoals === aGoals
+        ? `It ends level — honours shared at ${curr.score}.`
+        : `${hGoals > aGoals ? homeTeam : awayTeam} see it out, ${curr.score} the final score.`;
+      const text = `🏁 *Full-time*\n${homeTeam} ${curr.score} ${awayTeam}\n${resultLine}`;
       await notifyLinkedUsers(text, `Full time. ${homeTeam} ${curr.score.replace("-", " ")} ${awayTeam}.`);
     }
   }
@@ -410,6 +456,46 @@ function getLatestStats(scoreEntries) {
     if (!latest || (entry.Ts ?? 0) > (latest.Ts ?? 0)) latest = entry;
   }
   return latest ? latest.Stats : null;
+}
+
+// Builds { playerNormativeId -> "Firstname Lastname" } from the "lineups" event,
+// which lists every player once before kickoff. Safe no-op if that event isn't present.
+function buildPlayerLookup(scoreEntries) {
+  const lookup = {};
+  if (!Array.isArray(scoreEntries)) return lookup;
+  for (const entry of scoreEntries) {
+    if (entry.Action !== "lineups" || !Array.isArray(entry.Lineups)) continue;
+    for (const team of entry.Lineups) {
+      if (!Array.isArray(team.lineups)) continue;
+      for (const slot of team.lineups) {
+        const p = slot.player;
+        if (p?.normativeId && p?.preferredName) {
+          const parts = p.preferredName.split(",").map(s => s.trim());
+          lookup[p.normativeId] = parts.length === 2 ? `${parts[1]} ${parts[0]}` : p.preferredName;
+        }
+      }
+    }
+  }
+  return lookup;
+}
+
+function getLatestEventByAction(scoreEntries, action) {
+  if (!Array.isArray(scoreEntries)) return null;
+  let latest = null;
+  for (const entry of scoreEntries) {
+    if (entry.Action !== action) continue;
+    if (!latest || (entry.Ts ?? 0) > (latest.Ts ?? 0)) latest = entry;
+  }
+  return latest;
+}
+
+function goalTypePhrase(goalType) {
+  const map = { Head: "with a header", Penalty: "from the spot", "Free Kick": "with a stunning free kick", "Own Goal": "into his own net" };
+  return (goalType && map[goalType]) || "";
+}
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 // Extract "H-A" score string from stat keys (1 = P1 goals, 2 = P2 goals)
@@ -585,7 +671,7 @@ async function syncMarkets() {
 
       await db.collection("markets").doc(`wc_${fixtureId}`).set(marketDoc, { merge: true });
 
-      await maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards, status);
+      await maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards, status, scoreData);
 
       if (status === "completed") {
         await settleBets(fixtureId, marketDoc.winner);
