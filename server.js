@@ -304,12 +304,4 @@ app.get("/health", (req, res) => res.json({ status: "ok", network: NETWORK }));
 app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
-
-  // TEMP MANUAL SETTLEMENT TEST — remove before final submission
-  setTimeout(() => {
-    console.log("Running manual settlement test on wc_18257739 (forcing winner=home)...");
-    settleBets(18257739, "home")
-      .then(() => console.log("Manual settlement test complete — check Firestore."))
-      .catch(err => console.error("Manual settlement test failed:", err.message));
-  }, 5000);
 });
