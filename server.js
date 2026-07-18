@@ -50,6 +50,7 @@ if (TELEGRAM_BOT_TOKEN) {
   bot.setMyCommands([
     { command: "start", description: "Get started / link your GoalLine account" },
     { command: "link", description: "Link your account" },
+    { command: "unlink", description: "Stop receiving alerts" },
     { command: "help", description: "Show all commands" },
   ]);
 
@@ -58,6 +59,7 @@ if (TELEGRAM_BOT_TOKEN) {
   const HELP_TEXT = "📋 *GoalLine Bot Commands*\n\n"
     + "/start — Welcome message & instructions\n"
     + "/link — Link your GoalLine account (I'll ask for your code)\n"
+    + "/unlink — Stop receiving alerts on this chat\n"
     + "/help — Show this list\n\n"
     + "Once linked, I message you here automatically for goals ⚽, cards 🟨🟥, big odds shifts 📊, and full-time results 🏁 — no further commands needed.";
 
@@ -73,9 +75,19 @@ if (TELEGRAM_BOT_TOKEN) {
     reply_markup: { inline_keyboard: [[{ text: "📋 Show Commands", callback_data: "show_commands" }]] },
   };
 
+  async function findLinkedUser(chatId) {
+    const snap = await db.collection("users").where("telegramChatId", "==", String(chatId)).limit(1).get();
+    return snap.empty ? null : snap.docs[0];
+  }
+
   bot.onText(/\/start(?:\s+(\w+))?/, async (msg, match) => {
     if (match[1]) {
       await linkTelegramCode(match[1], msg.chat.id);
+      return;
+    }
+    const linkedDoc = await findLinkedUser(msg.chat.id);
+    if (linkedDoc) {
+      bot.sendMessage(msg.chat.id, `✅ You're already linked as *${linkedDoc.data().name || "a GoalLine user"}*. You'll keep getting live match alerts here — no action needed. Use /unlink if you ever want to stop.`, { parse_mode: "Markdown" });
       return;
     }
     bot.sendMessage(msg.chat.id, START_TEXT, { parse_mode: "Markdown", ...commandsButton });
@@ -86,6 +98,11 @@ if (TELEGRAM_BOT_TOKEN) {
   });
 
   bot.onText(/^\/link(?:\s+(\w+))?$/, async (msg, match) => {
+    const linkedDoc = await findLinkedUser(msg.chat.id);
+    if (linkedDoc) {
+      bot.sendMessage(msg.chat.id, `You're already linked as *${linkedDoc.data().name || "a GoalLine user"}*. Use /unlink first if you want to link a different account.`, { parse_mode: "Markdown" });
+      return;
+    }
     if (match[1]) {
       awaitingOtp.delete(msg.chat.id);
       await linkTelegramCode(match[1], msg.chat.id);
@@ -93,6 +110,20 @@ if (TELEGRAM_BOT_TOKEN) {
     }
     awaitingOtp.add(msg.chat.id);
     bot.sendMessage(msg.chat.id, "🔑 Please send me your 6-digit code from Profile → Connect Telegram in the app. Just type it and hit send.");
+  });
+
+  bot.onText(/\/unlink/, async (msg) => {
+    const linkedDoc = await findLinkedUser(msg.chat.id);
+    if (!linkedDoc) {
+      bot.sendMessage(msg.chat.id, "You're not currently linked to a GoalLine account.");
+      return;
+    }
+    bot.sendMessage(msg.chat.id, "⚠️ Are you sure? You'll stop receiving goal, card, odds-shift, and full-time alerts.", {
+      reply_markup: { inline_keyboard: [[
+        { text: "✅ Yes, unlink", callback_data: "unlink_confirm" },
+        { text: "❌ Cancel", callback_data: "unlink_cancel" },
+      ]] },
+    });
   });
 
   // Free-text fallback: if we just asked this chat for an OTP, treat their next message as the code
@@ -104,9 +135,27 @@ if (TELEGRAM_BOT_TOKEN) {
   });
 
   bot.on("callback_query", async (query) => {
+    const chatId = query.message.chat.id;
     if (query.data === "show_commands") {
       await bot.answerCallbackQuery(query.id);
-      bot.sendMessage(query.message.chat.id, HELP_TEXT, { parse_mode: "Markdown" });
+      bot.sendMessage(chatId, HELP_TEXT, { parse_mode: "Markdown" });
+      return;
+    }
+    if (query.data === "unlink_confirm") {
+      await bot.answerCallbackQuery(query.id);
+      const linkedDoc = await findLinkedUser(chatId);
+      if (linkedDoc) {
+        await linkedDoc.ref.update({ telegramChatId: admin.firestore.FieldValue.delete() });
+        bot.sendMessage(chatId, "🔕 You've been unlinked. You won't receive any more alerts here. Send /link any time to reconnect.");
+      } else {
+        bot.sendMessage(chatId, "You're not currently linked.");
+      }
+      return;
+    }
+    if (query.data === "unlink_cancel") {
+      await bot.answerCallbackQuery(query.id);
+      bot.sendMessage(chatId, "👍 Staying linked — you'll keep getting alerts.");
+      return;
     }
   });
 
@@ -180,10 +229,20 @@ async function notifyLinkedUsers(text, speakText) {
 
 // ─── PREVIOUS STATE CACHE (for detecting goals / odds shifts) ───────────
 const prevFixtureState = new Map();
-const ODDS_SHIFT_THRESHOLD = 0.75; // raised so only genuinely significant swings alert
+const ODDS_SHIFT_PROB_THRESHOLD = 8; // percentage points of implied probability — robust across all odds scales
 
 function impliedProb(decimalOdds) {
   return decimalOdds ? Math.round((1 / decimalOdds) * 100) : null;
+}
+
+async function logMatchEvent(fixtureId, event) {
+  try {
+    await db.collection("markets").doc(`wc_${fixtureId}`).update({
+      events: admin.firestore.FieldValue.arrayUnion({ ...event, timestamp: new Date().toISOString() }),
+    });
+  } catch (err) {
+    console.warn(`Failed to log timeline event for fixture ${fixtureId}:`, err.message);
+  }
 }
 
 async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards, status) {
@@ -194,35 +253,49 @@ async function maybeNotify(fixtureId, homeTeam, awayTeam, marketDoc, odds, cards
     oddsAway: odds?.oddsAway,
     redHome: cards.redHome, redAway: cards.redAway,
     yellowHome: cards.yellowHome, yellowAway: cards.yellowAway,
+    cornersHome: cards.cornersHome, cornersAway: cards.cornersAway,
   };
 
   if (prev) {
     if (prev.score !== curr.score && curr.score !== "0-0") {
       const text = `⚽ *GOAL!*\n${homeTeam} ${curr.score} ${awayTeam}\nThe scoreline just moved — that's a big swing in this one.`;
       await notifyLinkedUsers(text, `Goal! ${homeTeam} ${curr.score.replace("-", " ")} ${awayTeam}.`);
+      const scoringTeam = curr.score.split("-")[0] > prev.score.split("-")[0] ? homeTeam : awayTeam;
+      await logMatchEvent(fixtureId, { type: "goal", label: `Goal — ${scoringTeam}` });
     }
     if (curr.redHome > prev.redHome) {
       const text = `🟥 *RED CARD* — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}\n${homeTeam} are down to 10 men — expect the market to react fast.`;
       await notifyLinkedUsers(text, `Red card for ${homeTeam}. They're down to ten men.`);
+      await logMatchEvent(fixtureId, { type: "red", label: `Red card — ${homeTeam}` });
     }
     if (curr.redAway > prev.redAway) {
       const text = `🟥 *RED CARD* — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}\n${awayTeam} are down to 10 men — expect the market to react fast.`;
       await notifyLinkedUsers(text, `Red card for ${awayTeam}. They're down to ten men.`);
+      await logMatchEvent(fixtureId, { type: "red", label: `Red card — ${awayTeam}` });
     }
     if (curr.yellowHome > prev.yellowHome) {
       await notifyLinkedUsers(`🟨 Yellow card — ${homeTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+      await logMatchEvent(fixtureId, { type: "yellow", label: `Yellow card — ${homeTeam}` });
     }
     if (curr.yellowAway > prev.yellowAway) {
       await notifyLinkedUsers(`🟨 Yellow card — ${awayTeam}\n${homeTeam} ${curr.score} ${awayTeam}`);
+      await logMatchEvent(fixtureId, { type: "yellow", label: `Yellow card — ${awayTeam}` });
+    }
+    // Corners: timeline only — too frequent to justify a Telegram push
+    if (curr.cornersHome > prev.cornersHome) {
+      await logMatchEvent(fixtureId, { type: "corner", label: `Corner — ${homeTeam}` });
+    }
+    if (curr.cornersAway > prev.cornersAway) {
+      await logMatchEvent(fixtureId, { type: "corner", label: `Corner — ${awayTeam}` });
     }
     // Only fire for genuinely BIG shifts now — small odds wobble is noise, not news.
-    if (prev.oddsHome != null && curr.oddsHome != null) {
-      const shift = Math.max(Math.abs(curr.oddsHome - prev.oddsHome), Math.abs(curr.oddsAway - prev.oddsAway));
-      if (shift >= ODDS_SHIFT_THRESHOLD) {
-        const favoring = curr.oddsHome < prev.oddsHome ? homeTeam : awayTeam;
-        const before = impliedProb(prev.oddsHome < prev.oddsAway ? prev.oddsHome : prev.oddsAway);
-        const after = impliedProb(curr.oddsHome < curr.oddsAway ? curr.oddsHome : curr.oddsAway);
-        const text = `📊 *Big odds shift* — ${homeTeam} vs ${awayTeam}\nHome ${prev.oddsHome.toFixed(2)} → ${curr.oddsHome.toFixed(2)} | Away ${prev.oddsAway.toFixed(2)} → ${curr.oddsAway.toFixed(2)}\nThe market has swung hard toward ${favoring} — implied confidence moved from roughly ${before}% to ${after}%.`;
+    if (prev.oddsHome != null && curr.oddsHome != null && prev.oddsAway != null && curr.oddsAway != null) {
+      const prevHomeProb = impliedProb(prev.oddsHome);
+      const currHomeProb = impliedProb(curr.oddsHome);
+      const homeShiftPts = Math.abs(currHomeProb - prevHomeProb);
+      if (homeShiftPts >= ODDS_SHIFT_PROB_THRESHOLD) {
+        const favoring = currHomeProb > prevHomeProb ? homeTeam : awayTeam;
+        const text = `📊 *Big odds shift* — ${homeTeam} vs ${awayTeam}\nHome ${prev.oddsHome.toFixed(2)} → ${curr.oddsHome.toFixed(2)} | Away ${prev.oddsAway.toFixed(2)} → ${curr.oddsAway.toFixed(2)}\nThe market has swung hard toward ${favoring} — implied confidence moved from roughly ${prevHomeProb}% to ${currHomeProb}%.`;
         await notifyLinkedUsers(text, `Big odds shift. The market is now favoring ${favoring}.`);
       }
     }
@@ -345,9 +418,9 @@ function extractScore(scoreEntries, participant1IsHome) {
 // Extract total card counts from stat keys (3/4 = yellow home/away, 5/6 = red home/away)
 function extractCards(scoreEntries, participant1IsHome) {
   if (!Array.isArray(scoreEntries) || !scoreEntries.length) {
-    return { yellowHome: 0, yellowAway: 0, redHome: 0, redAway: 0 };
+    return { yellowHome: 0, yellowAway: 0, redHome: 0, redAway: 0, cornersHome: 0, cornersAway: 0 };
   }
-  let p1Yellow = 0, p2Yellow = 0, p1Red = 0, p2Red = 0;
+  let p1Yellow = 0, p2Yellow = 0, p1Red = 0, p2Red = 0, p1Corners = 0, p2Corners = 0;
   for (const entry of scoreEntries) {
     const key = entry.Key ?? entry.key ?? entry.StatKey;
     const value = entry.Value ?? entry.value ?? entry.StatValue;
@@ -355,12 +428,16 @@ function extractCards(scoreEntries, participant1IsHome) {
     if (key === 4) p2Yellow = Number(value) || p2Yellow;
     if (key === 5) p1Red = Number(value) || p1Red;
     if (key === 6) p2Red = Number(value) || p2Red;
+    if (key === 7) p1Corners = Number(value) || p1Corners;
+    if (key === 8) p2Corners = Number(value) || p2Corners;
   }
   return {
     yellowHome: participant1IsHome ? p1Yellow : p2Yellow,
     yellowAway: participant1IsHome ? p2Yellow : p1Yellow,
     redHome: participant1IsHome ? p1Red : p2Red,
     redAway: participant1IsHome ? p2Red : p1Red,
+    cornersHome: participant1IsHome ? p1Corners : p2Corners,
+    cornersAway: participant1IsHome ? p2Corners : p1Corners,
   };
 }
 
@@ -481,6 +558,7 @@ async function syncMarkets() {
         time: new Date(fixture.StartTime).toLocaleString("en-GB", {
           day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
         }),
+        kickoffAt: fixture.StartTime, // raw ISO timestamp — used client-side to estimate elapsed match minute
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       };
       if (odds) {
@@ -519,8 +597,31 @@ async function syncLoop() {
 // ─── HEALTHCHECK SERVER (Railway needs a listening port) ────────────────
 const app = express();
 app.use(express.static(__dirname));
+app.use(express.json({ limit: "8mb" })); // profile photos as base64 can be a few MB
 app.get("/", (req, res) => res.sendFile(__dirname + "/index.html"));
 app.get("/health", (req, res) => res.json({ status: "ok", network: NETWORK }));
+
+// ─── AVATAR UPLOAD (proxies to imgbb so the API key never reaches the browser) ─
+app.post("/api/upload-avatar", async (req, res) => {
+  try {
+    const { imageBase64 } = req.body;
+    if (!imageBase64) return res.status(400).json({ error: "No image provided" });
+    if (!process.env.IMGBB_API_KEY) return res.status(500).json({ error: "Uploads not configured" });
+
+    const cleaned = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+    const params = new URLSearchParams();
+    params.append("key", process.env.IMGBB_API_KEY);
+    params.append("image", cleaned);
+
+    const response = await axios.post("https://api.imgbb.com/1/upload", params, { timeout: 15000 });
+    const url = response.data?.data?.url;
+    if (!url) return res.status(502).json({ error: "Upload failed" });
+    res.json({ url });
+  } catch (err) {
+    console.error("Avatar upload failed:", err.message);
+    res.status(500).json({ error: "Upload failed" });
+  }
+});
 
 // SPA fallback: any other route (e.g. /home, /matches, /bets, /profile) still
 // serves index.html so a page refresh doesn't 404 — the client-side router
@@ -543,4 +644,3 @@ function shutdown(signal) {
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-
