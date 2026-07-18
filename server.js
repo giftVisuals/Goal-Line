@@ -32,6 +32,7 @@ const apiOrigin = CONFIG[NETWORK].apiOrigin;
 const apiBaseUrl = `${apiOrigin}/api`;
 
 const SYNC_INTERVAL_MS = 65_000; // free tier delay is ~60s, no point polling faster
+const COMMENTARY_INTERVAL_MS = 25_000; // how often we generate a new batch of commentary lines per live match
 
 // ─── FIREBASE ADMIN INIT ────────────────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
@@ -685,6 +686,83 @@ async function syncMarkets() {
   console.log(`[${new Date().toISOString()}] Sync complete.`);
 }
 
+// ─── LIVE DUAL COMMENTARY (Groq-generated, shared via Firestore) ────────
+const COMMENTATOR_A = "Marcus"; // male voice on frontend
+const COMMENTATOR_B = "Elena";  // female voice on frontend
+const commentarySequences = {}; // matchId -> last sequence number written
+
+async function generateCommentaryBatch(match) {
+  if (!process.env.GROQ_API_KEY) return [];
+
+  const prompt = `You are writing a short live football commentary exchange between two commentators, ${COMMENTATOR_A} (male) and ${COMMENTATOR_B} (female), for a World Cup match: ${match.home} vs ${match.away}. Current score: ${match.score || "0-0"}. Match status: ${match.status}.
+
+Rules:
+- Only discuss team-level play, tactics, atmosphere, and the scoreline. Do NOT invent specific player names, goals, cards, or moments — we do not have that data and it would be inaccurate.
+- Write 4 to 6 short alternating lines of natural dialogue between the two commentators, as if mid-broadcast (no greetings, no "welcome back", just ongoing commentary).
+- They can ask each other questions and react to each other.
+- Keep each line under 25 words.
+- Return ONLY a JSON array like: [{"speaker":"Marcus","text":"..."},{"speaker":"Elena","text":"..."}]`;
+
+  try {
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "llama-3.3-70b-versatile",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.9,
+        max_tokens: 500,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 20000,
+      }
+    );
+    const raw = res.data.choices[0].message.content.trim();
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return [];
+    const lines = JSON.parse(jsonMatch[0]);
+    return Array.isArray(lines) ? lines : [];
+  } catch (err) {
+    console.error("Groq commentary generation failed:", err.response?.data || err.message);
+    return [];
+  }
+}
+
+async function commentaryLoop() {
+  try {
+    const liveSnap = await db.collection("markets").where("status", "==", "live").get();
+    for (const doc of liveSnap.docs) {
+      const match = { id: doc.id, ...doc.data() };
+      const lines = await generateCommentaryBatch(match);
+      if (!lines.length) continue;
+
+      let seq = commentarySequences[match.id] || 0;
+      const batch = db.batch();
+      lines.forEach(line => {
+        seq += 1;
+        const ref = db.collection("commentaryLines").doc(`${match.id}_${seq}`);
+        batch.set(ref, {
+          matchId: match.id,
+          sequence: seq,
+          speaker: line.speaker === COMMENTATOR_B ? COMMENTATOR_B : COMMENTATOR_A,
+          text: line.text,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+      await batch.commit();
+      commentarySequences[match.id] = seq;
+      console.log(`Commentary: wrote ${lines.length} lines for ${match.home} vs ${match.away} (seq up to ${seq})`);
+    }
+  } catch (err) {
+    console.error("Commentary cycle failed:", err.response?.data || err.message);
+  } finally {
+    setTimeout(commentaryLoop, COMMENTARY_INTERVAL_MS);
+  }
+}
+
 // ─── LOOP (never crash the process on a bad cycle) ──────────────────────
 async function syncLoop() {
   try {
@@ -733,6 +811,7 @@ app.get(/^\/(?!health).*/, (req, res) => res.sendFile(__dirname + "/index.html")
 app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
+  commentaryLoop();
 });
 
 // ─── GRACEFUL SHUTDOWN (stops Telegram polling before the old container dies) ──
@@ -746,4 +825,3 @@ function shutdown(signal) {
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-
