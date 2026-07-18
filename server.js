@@ -527,12 +527,24 @@ async function syncMarkets() {
       }
 
       const [oddsData, scoreData] = await Promise.all([
-        txlineGet(`/odds/snapshot/${fixtureId}`).catch(() => null),
-        txlineGet(`/scores/snapshot/${fixtureId}`).catch(() => null),
+        txlineGet(`/odds/snapshot/${fixtureId}`).catch((err) => {
+          console.warn(`Odds fetch failed for fixture ${fixtureId}:`, err.message);
+          return null;
+        }),
+        txlineGet(`/scores/snapshot/${fixtureId}`).catch((err) => {
+          console.warn(`Scores fetch failed for fixture ${fixtureId}:`, err.message);
+          return null;
+        }),
       ]);
 
       const finished = isFinishedFromScores(scoreData);
-      const status = finished ? "completed" : statusFromFixture(fixture);
+      let status = finished ? "completed" : statusFromFixture(fixture);
+      // Safety net: don't let a match stay "live" forever if TxLINE's finish
+      // signal never fires for this fixture. 130 min covers 90 + stoppage + HT.
+      if (status === "live") {
+        const elapsedMins = (Date.now() - new Date(fixture.StartTime).getTime()) / 60000;
+        if (elapsedMins > 130) status = "completed";
+      }
       const score = extractScore(scoreData, fixture.Participant1IsHome);
       const cards = extractCards(scoreData, fixture.Participant1IsHome);
       const odds = extract1x2Odds(oddsData, fixture.Participant1IsHome);
@@ -644,3 +656,4 @@ function shutdown(signal) {
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
