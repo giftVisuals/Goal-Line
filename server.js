@@ -484,3 +484,15 @@ app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
 });
+
+// ─── GRACEFUL SHUTDOWN (stops Telegram polling before the old container dies) ──
+function shutdown(signal) {
+  console.log(`${signal} received — stopping Telegram polling before exit...`);
+  if (bot) {
+    bot.stopPolling().finally(() => process.exit(0));
+  } else {
+    process.exit(0);
+  }
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
