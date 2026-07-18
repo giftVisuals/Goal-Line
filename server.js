@@ -46,16 +46,52 @@ let bot = null;
 if (TELEGRAM_BOT_TOKEN) {
   bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
+  // Registers the native "/" commands menu button in Telegram's chat UI
+  bot.setMyCommands([
+    { command: "start", description: "Get started / link your GoalLine account" },
+    { command: "link", description: "Link account — /link CODE" },
+    { command: "help", description: "Show all commands" },
+  ]);
+
+  const HELP_TEXT = "📋 *GoalLine Bot Commands*\n\n"
+    + "/start — Welcome message & instructions\n"
+    + "/link CODE — Link your GoalLine account using the 6-digit code from Profile → Connect Telegram\n"
+    + "/help — Show this list\n\n"
+    + "Once linked, I message you here automatically for goals ⚽, cards 🟨🟥, big odds shifts 📊, and full-time results 🏁 — no further commands needed.";
+
+  const START_TEXT = "👋 *Welcome to GoalLine!*\n\n"
+    + "I send live World Cup alerts straight to this chat — goals, cards, odds shifts, and full-time scores.\n\n"
+    + "*To link your account:*\n"
+    + "1. Open the GoalLine app → Profile → Connect Telegram\n"
+    + "2. You'll get a 6-digit code\n"
+    + "3. Send it here as: `/link 123456`\n\n"
+    + "Tap the button below any time to see all commands.";
+
+  const commandsButton = {
+    reply_markup: { inline_keyboard: [[{ text: "📋 Show Commands", callback_data: "show_commands" }]] },
+  };
+
   bot.onText(/\/start(?:\s+(\w+))?/, async (msg, match) => {
-    if (!match[1]) {
-      bot.sendMessage(msg.chat.id, "👋 Welcome to GoalLine! Open the app → Profile → Connect Telegram, then send me the 6-digit code with /link CODE.");
+    if (match[1]) {
+      await linkTelegramCode(match[1], msg.chat.id);
       return;
     }
-    await linkTelegramCode(match[1], msg.chat.id);
+    bot.sendMessage(msg.chat.id, START_TEXT, { parse_mode: "Markdown", ...commandsButton });
+  });
+
+  bot.onText(/\/help/, (msg) => {
+    bot.sendMessage(msg.chat.id, HELP_TEXT, { parse_mode: "Markdown" });
   });
 
   bot.onText(/\/link\s+(\w+)/, async (msg, match) => {
     await linkTelegramCode(match[1], msg.chat.id);
+  });
+
+  bot.on("callback_query", async (query) => {
+    if (query.data === "show_commands") {
+      await bot.answerCallbackQuery(query.id);
+      bot.sendMessage(query.message.chat.id, HELP_TEXT, { parse_mode: "Markdown" });
+    }
   });
 
   console.log("Telegram bot polling started.");
@@ -426,3 +462,4 @@ app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening on port ${process.env.PORT || 3000}`);
   syncLoop();
 });
+
