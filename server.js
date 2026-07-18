@@ -399,38 +399,42 @@ function isFinishedFromScores(scoreEntries) {
   return ENDED_PHASE_CODES.includes(phase);
 }
 
+// scoreEntries is an array of match EVENTS (goal, corner, shot, possession, etc.),
+// each carrying a cumulative "Stats" snapshot keyed by stat number as a string.
+// We want the Stats object from whichever event happened most recently.
+function getLatestStats(scoreEntries) {
+  if (!Array.isArray(scoreEntries) || !scoreEntries.length) return null;
+  let latest = null;
+  for (const entry of scoreEntries) {
+    if (!entry.Stats || !Object.keys(entry.Stats).length) continue; // skip metadata events with empty Stats
+    if (!latest || (entry.Ts ?? 0) > (latest.Ts ?? 0)) latest = entry;
+  }
+  return latest ? latest.Stats : null;
+}
+
 // Extract "H-A" score string from stat keys (1 = P1 goals, 2 = P2 goals)
 function extractScore(scoreEntries, participant1IsHome) {
-  if (!Array.isArray(scoreEntries) || !scoreEntries.length) return "0-0";
-  let p1Goals = 0;
-  let p2Goals = 0;
-  for (const entry of scoreEntries) {
-    const key = entry.Key ?? entry.key ?? entry.StatKey;
-    const value = entry.Value ?? entry.value ?? entry.StatValue;
-    if (key === 1) p1Goals = Number(value) || p1Goals;
-    if (key === 2) p2Goals = Number(value) || p2Goals;
-  }
+  const stats = getLatestStats(scoreEntries);
+  if (!stats) return "0-0";
+  const p1Goals = Number(stats["1"]) || 0;
+  const p2Goals = Number(stats["2"]) || 0;
   const homeGoals = participant1IsHome ? p1Goals : p2Goals;
   const awayGoals = participant1IsHome ? p2Goals : p1Goals;
   return `${homeGoals}-${awayGoals}`;
 }
 
-// Extract total card counts from stat keys (3/4 = yellow home/away, 5/6 = red home/away)
+// Extract total card/corner counts from stat keys (3/4 = yellow, 5/6 = red, 7/8 = corners — home/away pairs)
 function extractCards(scoreEntries, participant1IsHome) {
-  if (!Array.isArray(scoreEntries) || !scoreEntries.length) {
+  const stats = getLatestStats(scoreEntries);
+  if (!stats) {
     return { yellowHome: 0, yellowAway: 0, redHome: 0, redAway: 0, cornersHome: 0, cornersAway: 0 };
   }
-  let p1Yellow = 0, p2Yellow = 0, p1Red = 0, p2Red = 0, p1Corners = 0, p2Corners = 0;
-  for (const entry of scoreEntries) {
-    const key = entry.Key ?? entry.key ?? entry.StatKey;
-    const value = entry.Value ?? entry.value ?? entry.StatValue;
-    if (key === 3) p1Yellow = Number(value) || p1Yellow;
-    if (key === 4) p2Yellow = Number(value) || p2Yellow;
-    if (key === 5) p1Red = Number(value) || p1Red;
-    if (key === 6) p2Red = Number(value) || p2Red;
-    if (key === 7) p1Corners = Number(value) || p1Corners;
-    if (key === 8) p2Corners = Number(value) || p2Corners;
-  }
+  const p1Yellow = Number(stats["3"]) || 0;
+  const p2Yellow = Number(stats["4"]) || 0;
+  const p1Red = Number(stats["5"]) || 0;
+  const p2Red = Number(stats["6"]) || 0;
+  const p1Corners = Number(stats["7"]) || 0;
+  const p2Corners = Number(stats["8"]) || 0;
   return {
     yellowHome: participant1IsHome ? p1Yellow : p2Yellow,
     yellowAway: participant1IsHome ? p2Yellow : p1Yellow,
@@ -544,9 +548,6 @@ async function syncMarkets() {
       if (status === "live") {
         const elapsedMins = (Date.now() - new Date(fixture.StartTime).getTime()) / 60000;
         if (elapsedMins > 130) status = "completed";
-      }
-      if (homeTeam === "France" || awayTeam === "France") {
-        console.log(`RAW scores payload for ${homeTeam} vs ${awayTeam}:`, JSON.stringify(scoreData));
       }
       const score = extractScore(scoreData, fixture.Participant1IsHome);
       const cards = extractCards(scoreData, fixture.Participant1IsHome);
