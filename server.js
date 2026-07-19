@@ -605,6 +605,15 @@ async function syncMarkets() {
   const fixtures = await txlineGet("/fixtures/snapshot");
   console.log(`Fetched ${fixtures.length} fixtures.`);
 
+  const liveCount = fixtures.filter(f => f.GameState !== 6 && statusFromFixture(f) === "live").length;
+  const upcomingCount = fixtures.filter(f => f.GameState !== 6 && statusFromFixture(f) === "upcoming").length;
+  db.collection("stats").doc("global").set({
+    totalMatches: fixtures.length,
+    liveNow: liveCount,
+    upcoming: upcomingCount,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true }).catch(err => console.warn("Failed to write public stats:", err.message));
+
   for (const fixture of fixtures) {
     try {
       const fixtureId = fixture.FixtureId;
@@ -825,3 +834,4 @@ function shutdown(signal) {
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
