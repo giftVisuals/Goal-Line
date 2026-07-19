@@ -2322,6 +2322,7 @@ function subscribeMatchCommentary(matchId) {
     });
   }, err => {
     console.error('Commentary listener error:', err);
+    showToast(`❌ Commentary listener error: ${err.code || err.message}`);
   });
 }
 
