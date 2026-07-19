@@ -748,7 +748,15 @@ async function commentaryLoop() {
       const lines = await generateCommentaryBatch(match);
       if (!lines.length) continue;
 
-      let seq = commentarySequences[match.id] || 0;
+      if (!(match.id in commentarySequences)) {
+        const existing = await db.collection("commentaryLines")
+          .where("matchId", "==", match.id)
+          .orderBy("sequence", "desc")
+          .limit(1)
+          .get();
+        commentarySequences[match.id] = existing.empty ? 0 : existing.docs[0].data().sequence;
+      }
+      let seq = commentarySequences[match.id];
       const batch = db.batch();
       lines.forEach(line => {
         seq += 1;
