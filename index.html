@@ -2404,6 +2404,14 @@ function toggleCommentary() {
     if (!femaleVoice) femaleVoice = pickFemaleVoice();
     crowd.volume = 0.12;
     crowd.play().catch(() => {});
+
+    // Unlock speech synthesis on Chrome — must run synchronously inside
+    // the tap, or later async speak() calls (from Firestore updates)
+    // get silently blocked.
+    const unlock = new SpeechSynthesisUtterance(' ');
+    unlock.volume = 0;
+    window.speechSynthesis.speak(unlock);
+
     syncCommentarySubscriptions();
   } else {
     crowd.pause();
