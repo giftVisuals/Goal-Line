@@ -2413,6 +2413,9 @@ function toggleCommentary() {
     crowd.volume = 0.12;
     crowd.play().catch(() => {});
 
+    const _voices = window.speechSynthesis.getVoices();
+    showToast(`Voices found: ${_voices.length} — ${_voices.slice(0,3).map(v => v.name).join(', ') || 'none'}`);
+
     // Unlock speech synthesis on Chrome — must run synchronously inside
     // the tap, or later async speak() calls (from Firestore updates)
     // get silently blocked.
