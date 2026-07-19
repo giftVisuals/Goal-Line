@@ -1912,7 +1912,7 @@
         <div class="live-dot"></div>
         Live Now
         <button id="commentary-toggle-btn" onclick="toggleCommentary()" class="commentary-mic-icon" title="Toggle live commentary">🎙️</button>
-      </div>
+        <button onclick="window.speechSynthesis.speak(new SpeechSynthesisUtterance('Testing one two three'))" style="padding:10px;background:#00e676;border-radius:8px;color:#000;font-weight:700;">TEST VOICE</button>
       <button class="see-all" onclick="switchTab('matches')">See all</button>
     </div>
 
