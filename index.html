@@ -2413,9 +2413,12 @@ function toggleCommentary() {
     crowd.volume = 0.12;
     crowd.play().catch(() => {});
 
-    const _voices = window.speechSynthesis.getVoices();
-    showToast(`Voices found: ${_voices.length} — ${_voices.slice(0,3).map(v => v.name).join(', ') || 'none'}`);
-
+    const _testUtter = new SpeechSynthesisUtterance('This is a test of voice commentary.');
+    _testUtter.onstart = () => showToast('✅ Speech STARTED');
+    _testUtter.onend = () => showToast('✅ Speech ENDED normally');
+    _testUtter.onerror = (e) => showToast(`❌ Speech ERROR: ${e.error}`);
+    window.speechSynthesis.speak(_testUtter);
+    showToast('Test utterance queued...');
     // Unlock speech synthesis on Chrome — must run synchronously inside
     // the tap, or later async speak() calls (from Firestore updates)
     // get silently blocked.
