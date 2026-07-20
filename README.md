@@ -2,8 +2,8 @@
 
 **A real-time, mobile-first World Cup prediction market powered by TxLINE and Solana.**
 
-> 🎥 **[WATCH THE 2-MINUTE DEMO VIDEO HERE]** *(Replace with your Loom/YouTube link)*  
-> 🌐 **[TRY THE LIVE APP HERE]** *(Replace with your Vercel/Railway link)*
+> 🎥 **[WATCH THE 2-MINUTE DEMO VIDEO HERE]** *https://www.loom.com/share/f8b112b003b0423e92bccbe72320ee0b*  
+> 🌐 **[TRY THE LIVE APP HERE]** *https://goal-line-production.up.railway.app/*
 
 ---
 
